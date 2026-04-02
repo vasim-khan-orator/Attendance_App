@@ -19,8 +19,8 @@ Attendance_App/
 ### 👩‍🏫 Teacher Portal
 - **Session Management** — Start and stop attendance sessions with live timers
 - **QR Code Generator** — Generate unique, per-student QR tokens to grant check-in access
-- **Facial Biometric Registration** — Enroll student faces via webcam capture
-- **Webcam Scanner** — Real-time face recognition to auto-mark attendance
+- **Facial Biometric Registration** — Enroll student faces using a guided 3-step multi-angle workflow (Front, Left, Right).
+- **Webcam Scanner** — Real-time face recognition powered by Deep Learning (YuNet/SFace) to auto-mark attendance
 - **Current Status View** — Live dashboard of who is present/absent in an active session
 - **Previous Sessions** — Browse and review archived attendance history by date
 - **Member Management** — Add or remove students (with name, roll number, department, year)
@@ -42,7 +42,8 @@ Attendance_App/
 | **HTTP Client** | Axios |
 | **Backend** | Python, FastAPI, Uvicorn |
 | **Database** | SQLite (via SQLAlchemy ORM) |
-| **Computer Vision** | OpenCV (`opencv-python-headless`), NumPy, Pillow |
+| **Computer Vision** | OpenCV (`opencv-python-headless`), NumPy |
+| **Deep Learning** | YuNet (Face Detection), SFace (128-D Feature Embedding) |
 | **Data Validation** | Pydantic |
 
 ---
@@ -187,5 +188,6 @@ teacher-portal/src/
 
 - The SQLite database (`attendance.db`) is created automatically on first run.
 - The backend performs automatic schema migrations on startup to handle column additions in existing databases.
-- Biometric face embeddings are stored as JSON arrays in the database.
+- The backend auto-downloads required OpenCV ONNX deep learning models (YuNet/SFace) from the official repository on first startup via `models_download.py` (approx. ~37MB).
+- Biometric face embeddings are stored as deeply-nested JSON arrays (list of 128-D vectors per pose) in the database.
 - CORS is configured to allow all origins by default (`"*"`); restrict this in production via the `CORS_ORIGINS` config for security.
