@@ -13,6 +13,14 @@ dist-ssr
 *.local
 .env
 env
+venv
+.venv/
+
+# ONNX face models (auto-downloaded at runtime)
+models/
+
+# Database
+*.db
 
 # Editor directories and files
 .vscode/*

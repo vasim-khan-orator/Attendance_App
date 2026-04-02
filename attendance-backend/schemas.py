@@ -121,6 +121,7 @@ class BiometricRegisterRequest(BaseModel):
     roll_no: str
     image_base64: Optional[str] = None
     images_base64: Optional[list[str]] = None
+    poses: Optional[list[str]] = None  # e.g. ["front", "left", "right"]
 
 
 class BiometricScanRequest(BaseModel):
@@ -142,6 +143,7 @@ class BiometricRegisterResponse(BaseModel):
     name: str
     vector_size: int
     samples_used: int
+    poses_stored: int = 1
     updated_at: datetime
 
 

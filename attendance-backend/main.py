@@ -11,6 +11,7 @@ from database import SessionLocal, engine
 from models import Base, Teacher, StudentAuth, QRCode, AttendanceSession, Member
 from datetime import datetime, date
 import uuid  # ✅ Added import for UUID generation
+from models_download import ensure_models as ensure_face_models
 
 Base.metadata.create_all(bind=engine)
 
@@ -125,7 +126,9 @@ def startup_event():
         # Ensure default teacher exists
         crud.ensure_default_teacher(db)
         run_compat_migrations(db)
-        print("✅ Startup: Default teacher initialized")
+        # Download face detection models if missing
+        ensure_face_models()
+        print("✅ Startup: Default teacher initialized, face models ready")
     except Exception as e:
         print(f"⚠️ Startup error: {e}")
     finally:
@@ -457,6 +460,7 @@ def register_biometric_route(payload: schemas.BiometricRegisterRequest, db: Sess
         db,
         roll_no=payload.roll_no,
         images_base64=images,
+        poses=payload.poses,
     )
 
 

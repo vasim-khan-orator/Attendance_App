@@ -6,49 +6,12 @@ from sqlalchemy import func, and_, or_
 from sqlalchemy.exc import IntegrityError
 import base64
 import json
-import math
 import cv2
 import numpy as np
 
 
 def _now_local() -> datetime:
     return datetime.now()
-
-
-def _iou(box_a, box_b) -> float:
-    ax, ay, aw, ah = box_a
-    bx, by, bw, bh = box_b
-    ax2, ay2 = ax + aw, ay + ah
-    bx2, by2 = bx + bw, by + bh
-
-    inter_x1 = max(ax, bx)
-    inter_y1 = max(ay, by)
-    inter_x2 = min(ax2, bx2)
-    inter_y2 = min(ay2, by2)
-
-    inter_w = max(0, inter_x2 - inter_x1)
-    inter_h = max(0, inter_y2 - inter_y1)
-    inter_area = inter_w * inter_h
-    if inter_area <= 0:
-        return 0.0
-
-    area_a = aw * ah
-    area_b = bw * bh
-    union = area_a + area_b - inter_area
-    if union <= 0:
-        return 0.0
-    return float(inter_area / union)
-
-
-def _dedupe_face_boxes(face_boxes: list[tuple[int, int, int, int]], max_faces: int) -> list[tuple[int, int, int, int]]:
-    ordered = sorted(face_boxes, key=lambda box: int(box[2] * box[3]), reverse=True)
-    kept: list[tuple[int, int, int, int]] = []
-    for box in ordered:
-        if all(_iou(box, other) < 0.45 for other in kept):
-            kept.append(box)
-        if len(kept) >= max_faces:
-            break
-    return kept
 
 
 def create_member(db, member: MemberCreate):
@@ -71,6 +34,12 @@ def get_members(db):
 
 
 def delete_member(db, roll_no: str):
+    # Perform cleanup of all associated data before deleting the member
+    db.query(Attendance).filter(Attendance.roll_no == roll_no).delete()
+    db.query(StudentAuth).filter(StudentAuth.roll_no == roll_no).delete()
+    db.query(BiometricVector).filter(BiometricVector.roll_no == roll_no).delete()
+    
+    # Finally, delete the member profile
     db.query(Member).filter(Member.roll_no == roll_no).delete()
     db.commit()
 
@@ -465,16 +434,39 @@ def get_attendance_by_session_id(db, session_id: int):
     ]
 
 
-FACE_CASCADE = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
+# ---------------------------------------------------------------------------
+# Face Detection (YuNet) + Face Recognition (SFace) — OpenCV DNN pipeline
+# ---------------------------------------------------------------------------
+from models_download import model_path, ensure_models as _ensure_face_models
+
+# Lazy-loaded singletons — initialized on first use.
+_face_detector = None
+_face_recognizer = None
 
 
-def _normalize_embedding(values: list[float]) -> list[float]:
-    norm = math.sqrt(sum(v * v for v in values))
-    if norm == 0:
-        return values
-    return [v / norm for v in values]
+def _get_detector():
+    global _face_detector
+    if _face_detector is None:
+        _ensure_face_models()
+        det_path = str(model_path("face_detection_yunet_2023mar.onnx"))
+        _face_detector = cv2.FaceDetectorYN.create(
+            det_path,
+            "",
+            (320, 320),       # default input size, resized per-image later
+            score_threshold=0.6,
+            nms_threshold=0.3,
+            top_k=5000,
+        )
+    return _face_detector
+
+
+def _get_recognizer():
+    global _face_recognizer
+    if _face_recognizer is None:
+        _ensure_face_models()
+        rec_path = str(model_path("face_recognition_sface_2021dec.onnx"))
+        _face_recognizer = cv2.FaceRecognizerSF.create(rec_path, "")
+    return _face_recognizer
 
 
 def _decode_base64_image(image_base64: str) -> np.ndarray:
@@ -503,163 +495,83 @@ def _decode_base64_image(image_base64: str) -> np.ndarray:
     return image
 
 
-def _extract_face_crops(image_bgr: np.ndarray, max_faces: int = 8) -> list[np.ndarray]:
-    if FACE_CASCADE.empty():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Face detector not initialized"
-        )
+def _detect_faces(image_bgr: np.ndarray, max_faces: int = 8):
+    """Detect faces using YuNet. Returns list of face info arrays (15 values each)."""
+    detector = _get_detector()
+    h, w = image_bgr.shape[:2]
+    detector.setInputSize((w, h))
+    _, raw_detections = detector.detect(image_bgr)
 
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
-    gray_enhanced = clahe.apply(gray)
-
-    candidate_boxes: list[tuple[int, int, int, int]] = []
-    detection_passes = [
-        (gray_enhanced, 1.1, 5, (60, 60)),
-        (gray_enhanced, 1.05, 4, (48, 48)),
-        (gray, 1.1, 5, (60, 60)),
-    ]
-
-    for source, scale_factor, min_neighbors, min_size in detection_passes:
-        detected = FACE_CASCADE.detectMultiScale(
-            source,
-            scaleFactor=scale_factor,
-            minNeighbors=min_neighbors,
-            minSize=min_size,
-        )
-        for box in detected:
-            candidate_boxes.append(tuple(int(v) for v in box))
-
-    if len(candidate_boxes) == 0:
+    if raw_detections is None or len(raw_detections) == 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No face detected in frame"
         )
 
-    ordered_faces = _dedupe_face_boxes(candidate_boxes, max_faces=max_faces)
-    crops: list[np.ndarray] = []
-
-    for x, y, w, h in ordered_faces:
-        pad = int(max(w, h) * 0.15)
-        x1 = max(0, x - pad)
-        y1 = max(0, y - pad)
-        x2 = min(gray.shape[1], x + w + pad)
-        y2 = min(gray.shape[0], y + h + pad)
-
-        face = gray[y1:y2, x1:x2]
-        if face.size == 0:
-            continue
-
-        face = cv2.equalizeHist(face)
-        crops.append(cv2.resize(face, (128, 128), interpolation=cv2.INTER_AREA))
-
-    if not crops:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Face crop failed"
-        )
-
-    return crops
+    # Sort by confidence (index 14), take top max_faces
+    sorted_faces = sorted(raw_detections, key=lambda f: float(f[14]), reverse=True)
+    return sorted_faces[:max_faces]
 
 
-def _extract_face_crop(image_bgr: np.ndarray) -> np.ndarray:
-    return _extract_face_crops(image_bgr, max_faces=1)[0]
-
-
-def _lbp_image(gray: np.ndarray) -> np.ndarray:
-    center = gray
-    lbp = np.zeros_like(gray, dtype=np.uint8)
-    offsets = [
-        (-1, -1), (-1, 0), (-1, 1),
-        (0, 1), (1, 1), (1, 0),
-        (1, -1), (0, -1),
-    ]
-
-    for bit, (dy, dx) in enumerate(offsets):
-        shifted = np.roll(np.roll(gray, dy, axis=0), dx, axis=1)
-        lbp |= ((shifted >= center).astype(np.uint8) << bit)
-
-    return lbp[1:-1, 1:-1]
-
-
-def _lbp_grid_hist(gray: np.ndarray, grid: tuple[int, int] = (4, 4), bins: int = 16) -> list[float]:
-    lbp = _lbp_image(gray)
-    h, w = lbp.shape
-    gh, gw = grid
-    cell_h = max(1, h // gh)
-    cell_w = max(1, w // gw)
-    features: list[float] = []
-
-    quant_step = 256 // bins
-    for gy in range(gh):
-        for gx in range(gw):
-            y1 = gy * cell_h
-            y2 = h if gy == gh - 1 else (gy + 1) * cell_h
-            x1 = gx * cell_w
-            x2 = w if gx == gw - 1 else (gx + 1) * cell_w
-            cell = lbp[y1:y2, x1:x2]
-            quantized = (cell // quant_step).astype(np.int32)
-            hist = np.bincount(quantized.ravel(), minlength=bins).astype(np.float32)
-            if hist.sum() > 0:
-                hist /= hist.sum()
-            features.extend(hist.tolist())
-
-    return features
-
-
-def _dct_lowfreq(gray: np.ndarray, size: int = 8) -> list[float]:
-    matrix = np.float32(gray) / 255.0
-    dct = cv2.dct(matrix)
-    block = dct[:size, :size].flatten()
-    if block.size:
-        block[0] = 0.0  # drop DC component
-    norm = float(np.linalg.norm(block))
-    if norm > 0:
-        block = block / norm
-    return block.tolist()
-
-
-def _gradient_hist(gray: np.ndarray, bins: int = 32) -> list[float]:
-    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    mag, ang = cv2.cartToPolar(gx, gy, angleInDegrees=True)
-    bin_idx = np.int32((ang / 360.0) * bins) % bins
-    hist = np.bincount(bin_idx.ravel(), weights=mag.ravel(), minlength=bins).astype(np.float32)
-    if hist.sum() > 0:
-        hist /= hist.sum()
-    return hist.tolist()
-
-
-def _embedding_from_face(face: np.ndarray) -> list[float]:
-    features = []
-    features.extend(_lbp_grid_hist(face, grid=(4, 4), bins=16))
-    features.extend(_dct_lowfreq(face, size=8))
-    features.extend(_gradient_hist(face, bins=32))
-    return _normalize_embedding(features)
+def _embedding_from_face_detection(image_bgr: np.ndarray, face_info) -> list[float]:
+    """Align face using landmarks and extract 128-D SFace embedding."""
+    recognizer = _get_recognizer()
+    aligned = recognizer.alignCrop(image_bgr, face_info)
+    feature = recognizer.feature(aligned)
+    return feature.flatten().tolist()
 
 
 def _embeddings_from_image_base64(image_base64: str) -> list[list[float]]:
+    """Detect all faces in an image and return their 128-D embeddings."""
     image = _decode_base64_image(image_base64)
-    faces = _extract_face_crops(image)
-    return [_embedding_from_face(face) for face in faces]
+    faces = _detect_faces(image)
+    return [_embedding_from_face_detection(image, f) for f in faces]
 
 
 def _embedding_from_image_base64(image_base64: str) -> list[float]:
+    """Detect the single best face and return its 128-D embedding."""
     return _embeddings_from_image_base64(image_base64)[0]
 
 
-def _mean_embedding(embeddings: list[list[float]]) -> list[float]:
-    matrix = np.array(embeddings, dtype=np.float32)
-    mean_vec = np.mean(matrix, axis=0)
-    return _normalize_embedding(mean_vec.tolist())
-
-
 def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
-    return float(sum(a * b for a, b in zip(vec_a, vec_b)))
+    a = np.array(vec_a, dtype=np.float32)
+    b = np.array(vec_b, dtype=np.float32)
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(np.dot(a, b) / (norm_a * norm_b))
 
 
-def register_biometric_vector(db, roll_no: str, images_base64: list[str]):
+def _best_pose_similarity(target: list[float], stored_vecs: list[list[float]]) -> float:
+    """Compare target against multiple stored pose vectors, return best similarity."""
+    best = -2.0
+    for vec in stored_vecs:
+        if len(vec) != len(target):
+            continue
+        sim = _cosine_similarity(target, vec)
+        if sim > best:
+            best = sim
+    return best
+
+
+def _parse_stored_embedding(embedding_json_str: str) -> list[list[float]]:
+    """
+    Parse stored embedding JSON. Supports two formats:
+    - Old format (flat list):  [0.1, 0.2, ...] → wrapped as [[0.1, 0.2, ...]]
+    - New format (list of lists): [[0.1, ...], [0.2, ...], ...]
+    """
+    parsed = json.loads(embedding_json_str)
+    if not parsed:
+        return []
+    # If first element is a number, it's old flat format → wrap in list
+    if isinstance(parsed[0], (int, float)):
+        return [parsed]
+    # New format: list of lists
+    return parsed
+
+
+def register_biometric_vector(db, roll_no: str, images_base64: list[str], poses: list[str] | None = None):
     member = db.query(Member).filter(Member.roll_no == roll_no).first()
     if not member:
         raise HTTPException(
@@ -673,42 +585,45 @@ def register_biometric_vector(db, roll_no: str, images_base64: list[str]):
             detail="At least one enrollment image is required"
         )
 
-    if len(images_base64) > 6:
+    if len(images_base64) > 9:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Too many enrollment images. Max allowed is 6"
+            detail="Too many enrollment images. Max allowed is 9"
         )
 
+    # Extract one embedding per image (each image = one pose)
     embeddings: list[list[float]] = []
     for idx, sample in enumerate(images_base64):
+        pose_label = poses[idx] if poses and idx < len(poses) else f"pose_{idx}"
         try:
             embeddings.append(_embedding_from_image_base64(sample))
         except HTTPException as exc:
             raise HTTPException(
                 status_code=exc.status_code,
-                detail=f"Sample {idx + 1}: {exc.detail}"
+                detail=f"Sample {idx + 1} ({pose_label}): {exc.detail}"
             )
 
-    vector = _mean_embedding(embeddings)
+    # Store as list-of-lists (one vector per pose)
     now = _now_local()
 
     existing = db.query(BiometricVector).filter(BiometricVector.roll_no == roll_no).first()
     if existing:
-        existing.embedding_json = json.dumps(vector)
+        existing.embedding_json = json.dumps(embeddings)
         existing.updated_at = now
         db.commit()
         db.refresh(existing)
         return {
             "roll_no": roll_no,
             "name": member.name,
-            "vector_size": len(vector),
+            "vector_size": len(embeddings[0]) if embeddings else 0,
             "samples_used": len(embeddings),
+            "poses_stored": len(embeddings),
             "updated_at": existing.updated_at,
         }
 
     record = BiometricVector(
         roll_no=roll_no,
-        embedding_json=json.dumps(vector),
+        embedding_json=json.dumps(embeddings),
         created_at=now,
         updated_at=now,
     )
@@ -719,8 +634,9 @@ def register_biometric_vector(db, roll_no: str, images_base64: list[str]):
     return {
         "roll_no": roll_no,
         "name": member.name,
-        "vector_size": len(vector),
+        "vector_size": len(embeddings[0]) if embeddings else 0,
         "samples_used": len(embeddings),
+        "poses_stored": len(embeddings),
         "updated_at": record.updated_at,
     }
 
@@ -734,9 +650,12 @@ def get_biometric_vector_sheet(db):
     for member in members:
         row = by_roll.get(member.roll_no)
         preview = None
+        vec_size = None
         if row:
-            parsed = json.loads(row.embedding_json)
-            preview = [round(float(v), 4) for v in parsed[:8]]
+            pose_vecs = _parse_stored_embedding(row.embedding_json)
+            if pose_vecs and pose_vecs[0]:
+                preview = [round(float(v), 4) for v in pose_vecs[0][:8]]
+                vec_size = len(pose_vecs[0])
         sheet.append(
             {
                 "roll_no": member.roll_no,
@@ -744,7 +663,7 @@ def get_biometric_vector_sheet(db):
                 "has_vector": bool(row),
                 "updated_at": row.updated_at if row else None,
                 "embedding_preview": preview,
-                "vector_size": len(parsed) if row else None,
+                "vector_size": vec_size,
             }
         )
     return sheet
@@ -758,30 +677,62 @@ def match_face_and_mark_attendance(db, image_base64: str, status_value: str = "p
             detail="Attendance session not active"
         )
 
-    targets = _embeddings_from_image_base64(image_base64)
+    # Gracefully handle "no face detected" — return clean no-match instead of 422
+    try:
+        targets = _embeddings_from_image_base64(image_base64)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+            return {
+                "matched": False,
+                "roll_no": None,
+                "name": None,
+                "similarity": None,
+                "attendance": None,
+                "match_count": 0,
+                "matches": [],
+                "faces_detected": 0,
+                "face_results": [],
+            }
+        raise
     vectors = db.query(BiometricVector).all()
     if not vectors:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No biometric vectors registered"
-        )
+        return {
+            "matched": False,
+            "roll_no": None,
+            "name": None,
+            "similarity": None,
+            "attendance": None,
+            "match_count": 0,
+            "matches": [],
+            "faces_detected": len(targets) if targets else 0,
+            "face_results": [],
+        }
 
-    threshold = 0.80
-    min_margin = 0.015
+    threshold = 0.70
+    min_margin = 0.02
 
-    parsed_vectors: list[tuple[str, list[float]]] = []
+    # Parse stored embeddings (supports old flat format and new multi-pose format)
+    parsed_vectors: list[tuple[str, list[list[float]]]] = []
     for vector_row in vectors:
         try:
-            registered = [float(v) for v in json.loads(vector_row.embedding_json)]
+            pose_vecs = _parse_stored_embedding(vector_row.embedding_json)
         except Exception:
             continue
-        parsed_vectors.append((vector_row.roll_no, registered))
+        if pose_vecs:
+            parsed_vectors.append((vector_row.roll_no, pose_vecs))
 
     if not parsed_vectors:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No valid biometric vectors registered"
-        )
+        return {
+            "matched": False,
+            "roll_no": None,
+            "name": None,
+            "similarity": None,
+            "attendance": None,
+            "match_count": 0,
+            "matches": [],
+            "faces_detected": len(targets) if targets else 0,
+            "face_results": [],
+        }
 
     matched_rolls: dict[str, float] = {}
     best_observed_similarity = -2.0
@@ -794,11 +745,12 @@ def match_face_and_mark_attendance(db, image_base64: str, status_value: str = "p
         second_best_similarity = -2.0
         comparable_count = 0
 
-        for roll_no, registered in parsed_vectors:
-            if len(registered) != len(target):
-                continue
+        for roll_no, pose_vecs in parsed_vectors:
+            # Compare against ALL stored pose vectors, take best
+            similarity = _best_pose_similarity(target, pose_vecs)
+            if similarity <= -1.5:
+                continue  # incompatible dimensions
             comparable_count += 1
-            similarity = _cosine_similarity(target, registered)
             if similarity > best_similarity:
                 second_best_similarity = best_similarity
                 best_similarity = similarity

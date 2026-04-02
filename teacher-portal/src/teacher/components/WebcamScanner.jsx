@@ -9,7 +9,7 @@ import { getApiErrorMessage } from "../../api/errorUtils";
 const ROLL_COOLDOWN_MS = 3000;
 const FRAME_INTERVAL_MS = 450;
 const FACE_SCAN_INTERVAL_MS = 1800;
-const FACE_MATCH_THRESHOLD = 0.8;
+const FACE_MATCH_THRESHOLD = 0.70;
 
 function extractRollFromQr(text) {
   const value = (text || "").trim();
@@ -290,8 +290,16 @@ export default function WebcamScanner({ isScannerActive, onScanResult, reloadCur
 
       if (responseMatches.length === 0) {
         const frameFaces = Array.isArray(result.face_results) ? result.face_results : [];
-        setLastFrameFaces(frameFaces);
         const facesDetected = typeof result.faces_detected === "number" ? result.faces_detected : frameFaces.length;
+
+        // Clear stale face data when no faces are in frame
+        if (facesDetected === 0) {
+          setLastFrameFaces([]);
+          setLastFaceResult(null);
+          return { marked: [], errors: [], detected: false };
+        }
+
+        setLastFrameFaces(frameFaces);
         setLastFaceResult({
           matched: false,
           similarity: typeof result.similarity === "number" ? result.similarity : 0,
