@@ -155,6 +155,13 @@ class BiometricScanMatch(BaseModel):
     attendance: Optional[AttendanceHistoryResponse] = None
 
 
+class BiometricFaceBox(BaseModel):
+    x: float
+    y: float
+    width: float
+    height: float
+
+
 class BiometricFaceResult(BaseModel):
     face_index: int
     matched: bool
@@ -162,6 +169,7 @@ class BiometricFaceResult(BaseModel):
     name: Optional[str] = None
     similarity: Optional[float] = None
     attendance_recorded: bool = False
+    box: Optional[BiometricFaceBox] = None
 
 
 class BiometricScanResponse(BaseModel):

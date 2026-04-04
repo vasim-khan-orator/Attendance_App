@@ -528,6 +528,13 @@ def _embeddings_from_image_base64(image_base64: str) -> list[list[float]]:
     return [_embedding_from_face_detection(image, f) for f in faces]
 
 
+def _faces_and_embeddings_from_image_base64(image_base64: str) -> list[tuple]:
+    """Detect all faces in an image and return their info arrays and 128-D embeddings."""
+    image = _decode_base64_image(image_base64)
+    faces = _detect_faces(image)
+    return [(f, _embedding_from_face_detection(image, f)) for f in faces]
+
+
 def _embedding_from_image_base64(image_base64: str) -> list[float]:
     """Detect the single best face and return its 128-D embedding."""
     return _embeddings_from_image_base64(image_base64)[0]
@@ -679,7 +686,9 @@ def match_face_and_mark_attendance(db, image_base64: str, status_value: str = "p
 
     # Gracefully handle "no face detected" — return clean no-match instead of 422
     try:
-        targets = _embeddings_from_image_base64(image_base64)
+        face_and_targets = _faces_and_embeddings_from_image_base64(image_base64)
+        targets = [ft[1] for ft in face_and_targets]
+        face_infos = [ft[0] for ft in face_and_targets]
     except HTTPException as exc:
         if exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
             return {
@@ -766,6 +775,9 @@ def match_face_and_mark_attendance(db, image_base64: str, status_value: str = "p
                 detail="Stored vectors are from an older model. Re-register student biometrics."
             )
 
+        box_info = face_infos[index]
+        box = {"x": float(box_info[0]), "y": float(box_info[1]), "width": float(box_info[2]), "height": float(box_info[3])}
+
         if (
             best_roll is None or
             best_similarity < threshold or
@@ -779,6 +791,7 @@ def match_face_and_mark_attendance(db, image_base64: str, status_value: str = "p
                     "name": None,
                     "similarity": None if best_similarity <= -1.5 else round(best_similarity, 4),
                     "attendance_recorded": False,
+                    "box": box,
                 }
             )
             continue
@@ -791,6 +804,7 @@ def match_face_and_mark_attendance(db, image_base64: str, status_value: str = "p
                 "name": member_names.get(best_roll, ""),
                 "similarity": round(best_similarity, 4),
                 "attendance_recorded": False,
+                "box": box,
             }
         )
 

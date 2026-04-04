@@ -9,7 +9,7 @@ import { getApiErrorMessage } from "../../api/errorUtils";
 const ROLL_COOLDOWN_MS = 3000;
 const FRAME_INTERVAL_MS = 450;
 const FACE_SCAN_INTERVAL_MS = 1800;
-const FACE_MATCH_THRESHOLD = 0.70;
+const FACE_MATCH_THRESHOLD = 0.65;
 
 function extractRollFromQr(text) {
   const value = (text || "").trim();
@@ -43,6 +43,41 @@ export default function WebcamScanner({ isScannerActive, onScanResult, reloadCur
   const streamRef = useRef(null);
   const loopRef = useRef(null);
   const canvasRef = useRef(document.createElement("canvas"));
+  const overlayCanvasRef = useRef(null);
+
+  const drawFaceBoxes = (faces, videoWidth, videoHeight) => {
+    const canvas = overlayCanvasRef.current;
+    if (!canvas) return;
+    
+    if (canvas.width !== videoWidth || canvas.height !== videoHeight) {
+      canvas.width = videoWidth;
+      canvas.height = videoHeight;
+    }
+    
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    if (!faces || faces.length === 0) return;
+    
+    faces.forEach((face) => {
+      if (face.box) {
+        const { x, y, width, height } = face.box;
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = face.matched ? "#22c55e" : "#f87171";
+        ctx.strokeRect(x, y, width, height);
+        
+        const txt = face.matched ? (face.name || face.roll_no) : "Unknown";
+        ctx.font = "bold 24px Arial";
+        const txtWidth = ctx.measureText(txt).width;
+        
+        ctx.fillStyle = face.matched ? "rgba(34, 197, 94, 0.85)" : "rgba(248, 113, 113, 0.85)";
+        ctx.fillRect(x, y > 34 ? y - 34 : y, txtWidth + 12, 34);
+        
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(txt, x + 6, y > 34 ? y - 8 : y + 26);
+      }
+    });
+  };
   const busyRef = useRef(false);
   const lastFaceAttemptRef = useRef(0);
   const recentMarkedRef = useRef(new Map());
@@ -270,10 +305,10 @@ export default function WebcamScanner({ isScannerActive, onScanResult, reloadCur
     return { marked, errors };
   };
 
-  const processFaceAttendance = async (imageBase64, nowMs, cycleMarkedSet) => {
+  const processFaceAttendance = async (frame, nowMs, cycleMarkedSet) => {
     try {
       const result = await scanBiometric({
-        image_base64: imageBase64,
+        image_base64: frame.imageBase64,
         status: "present",
       });
 
@@ -294,11 +329,13 @@ export default function WebcamScanner({ isScannerActive, onScanResult, reloadCur
 
         // Clear stale face data when no faces are in frame
         if (facesDetected === 0) {
+          drawFaceBoxes([], frame.width, frame.height);
           setLastFrameFaces([]);
           setLastFaceResult(null);
           return { marked: [], errors: [], detected: false };
         }
 
+        drawFaceBoxes(frameFaces, frame.width, frame.height);
         setLastFrameFaces(frameFaces);
         setLastFaceResult({
           matched: false,
@@ -312,6 +349,7 @@ export default function WebcamScanner({ isScannerActive, onScanResult, reloadCur
 
       const top = responseMatches[0];
       const frameFaces = Array.isArray(result.face_results) ? result.face_results : [];
+      drawFaceBoxes(frameFaces, frame.width, frame.height);
       setLastFrameFaces(frameFaces);
       setLastFaceResult({
         matched: true,
@@ -348,6 +386,7 @@ export default function WebcamScanner({ isScannerActive, onScanResult, reloadCur
 
       return { marked, errors: [], detected: true };
     } catch (err) {
+      drawFaceBoxes([], frame.width, frame.height);
       setLastFrameFaces([]);
       setLastFaceResult({
         matched: false,
@@ -398,7 +437,7 @@ export default function WebcamScanner({ isScannerActive, onScanResult, reloadCur
 
       if (faceDue) {
         lastFaceAttemptRef.current = now;
-        const faceResult = await processFaceAttendance(frame.imageBase64, now, cycleMarkedSet);
+        const faceResult = await processFaceAttendance(frame, now, cycleMarkedSet);
         faceDetected = faceResult.detected;
         markedEntries.push(...faceResult.marked);
         allErrors.push(...faceResult.errors);
@@ -465,6 +504,19 @@ export default function WebcamScanner({ isScannerActive, onScanResult, reloadCur
             height: "100%",
             objectFit: "cover",
             background: "#0f172a",
+          }}
+        />
+
+        <canvas
+          ref={overlayCanvasRef}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            pointerEvents: "none",
+            zIndex: 10,
           }}
         />
 
