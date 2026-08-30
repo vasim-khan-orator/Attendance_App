@@ -1,5 +1,5 @@
 // src/teacher/components/Timer.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { timerStorage } from "../utils/timerStorage";
 import { API_BASE_URL } from "../../config";
@@ -57,7 +57,7 @@ export default function Timer({ onTimerStateChange }) {
     if (onTimerStateChange) onTimerStateChange(true);
   };
 
-  const handleStopTimer = async () => {
+  const handleStopTimer = useCallback(async () => {
     timerStorage.stopTimer();
     setIsRunning(false);
 
@@ -69,7 +69,7 @@ export default function Timer({ onTimerStateChange }) {
     }
 
     if (onTimerStateChange) onTimerStateChange(false);
-  };
+  }, [onTimerStateChange]);
 
   const handleResetTimer = async () => {
     timerStorage.resetTimer();
@@ -79,6 +79,22 @@ export default function Timer({ onTimerStateChange }) {
     
     if (onTimerStateChange) onTimerStateChange(false);
   };
+
+  // ── Sync display with global timer state (driven by DashboardContent) ────
+  // Command listeners (command-start-timer, command-stop-timer) have been
+  // moved to DashboardContent which is always mounted. Timer.jsx simply
+  // watches for the resulting state-change notification and re-reads storage.
+  useEffect(() => {
+    const onStateChanged = (e) => {
+      const { isRunning } = e.detail || {};
+      setIsRunning(!!isRunning);
+      setTimeLeft(timerStorage.getRemainingTime());
+      if (!isRunning) setCustomTime("10:00:00");
+    };
+
+    window.addEventListener("timer-state-changed", onStateChanged);
+    return () => window.removeEventListener("timer-state-changed", onStateChanged);
+  }, []);
 
   return (
     <div style={styles.container}>

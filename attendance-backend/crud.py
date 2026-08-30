@@ -537,7 +537,13 @@ def _faces_and_embeddings_from_image_base64(image_base64: str) -> list[tuple]:
 
 def _embedding_from_image_base64(image_base64: str) -> list[float]:
     """Detect the single best face and return its 128-D embedding."""
-    return _embeddings_from_image_base64(image_base64)[0]
+    embeddings = _embeddings_from_image_base64(image_base64)
+    if not embeddings:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No face detected in the image."
+        )
+    return embeddings[0]
 
 
 def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:

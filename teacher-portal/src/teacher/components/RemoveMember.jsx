@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { useMembers } from "../TeacherDashboard"; // Changed
+import React, { useState, useEffect, useRef } from "react";
+import { useMembers } from "../TeacherDashboard";
 import { studentAuthStorage } from "../utils/authStorage";
 
 export default function RemoveMember() {
@@ -7,9 +7,12 @@ export default function RemoveMember() {
   const [rollNoToRemove, setRollNoToRemove] = useState("");
   const [message, setMessage] = useState({ text: "", type: "" });
   const [isRemoving, setIsRemoving] = useState(false);
+  // ref so event listeners always see the latest rollNoToRemove
+  const rollNoRef = useRef("");
 
-  const handleRemove = async () => {
-    if (!rollNoToRemove.trim()) {
+  const handleRemove = async (rollNoOverride) => {
+    const rollNo = (rollNoOverride || rollNoRef.current || rollNoToRemove).trim();
+    if (!rollNo) {
       setMessage({ 
         text: "Please enter a roll number", 
         type: "error" 
@@ -20,14 +23,14 @@ export default function RemoveMember() {
     setIsRemoving(true);
 
     try {
-      const success = await removeMember(rollNoToRemove.trim());
+      const success = await removeMember(rollNo);
       
       if (success) {
         // Also remove the student's password
         studentAuthStorage.deletePassword(rollNoToRemove.trim());
         
         setMessage({ 
-          text: `Member with roll number ${rollNoToRemove} removed successfully! Their login access has been revoked.`, 
+          text: `Member with roll number ${rollNo} removed successfully! Their login access has been revoked.`, 
           type: "success" 
         });
         setRollNoToRemove("");
@@ -44,10 +47,28 @@ export default function RemoveMember() {
       });
     } finally {
       setIsRemoving(false);
-      
       setTimeout(() => setMessage({ text: "", type: "" }), 5000);
     }
   };
+
+  // ── Voice command listeners ─────────────────────────────────────────────
+  useEffect(() => {
+    const onFill = (e) => {
+      const { rollNo = "" } = e.detail || {};
+      rollNoRef.current = rollNo;
+      setRollNoToRemove(rollNo);
+    };
+    const onSubmit = (e) => {
+      const { rollNo } = e.detail || {};
+      handleRemove(rollNo);
+    };
+    window.addEventListener("command-fill-remove-member", onFill);
+    window.addEventListener("command-submit-remove-member", onSubmit);
+    return () => {
+      window.removeEventListener("command-fill-remove-member", onFill);
+      window.removeEventListener("command-submit-remove-member", onSubmit);
+    };
+  }, []);
 
   return (
     <div style={styles.container}>
@@ -57,6 +78,7 @@ export default function RemoveMember() {
         <div style={styles.inputGroup}>
           <label style={styles.label}>Enter Roll Number to Remove</label>
           <input
+            list="remove-roll-numbers"
             type="text"
             value={rollNoToRemove}
             onChange={(e) => setRollNoToRemove(e.target.value)}
@@ -68,6 +90,11 @@ export default function RemoveMember() {
             }}
             disabled={isRemoving}
           />
+          <datalist id="remove-roll-numbers">
+            {members.map((m) => (
+              <option key={m.roll_no} value={m.roll_no}>{m.name}</option>
+            ))}
+          </datalist>
         </div>
 
         <button 

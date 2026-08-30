@@ -4,13 +4,15 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  // IMPORTANT: base must be './' so asset paths are relative.
+  // Without this, Vite outputs /assets/... (absolute) which breaks
+  // when Electron loads the app via file:// protocol.
+  base: './',
   server: {
-    host: '0.0.0.0',      // Allows external connections (mobile access)
-    port: 5173,           // Default Vite port
-    strictPort: false,    // Allows port changes
-    // Enable CORS for cross-origin requests
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: false,
     cors: true,
-    // Proxy setup if needed for APIs
     proxy: {
       '/api': {
         target: 'http://localhost:3000',
@@ -19,7 +21,6 @@ export default defineConfig({
       }
     }
   },
-  // Build configuration
   build: {
     outDir: 'dist',
     sourcemap: true,
@@ -33,3 +34,4 @@ export default defineConfig({
     }
   }
 })
+

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { registerBiometricVector } from "../../api/biometricApi";
+import { getMembers } from "../../api/membersApi";
 import { getApiErrorMessage } from "../../api/errorUtils";
 
 const POSES = [
@@ -22,30 +23,67 @@ export default function BiometricRegistration() {
   const [countdown, setCountdown] = useState(null);
   const [info, setInfo] = useState("");
   const [qualityReport, setQualityReport] = useState(null);
+  const [members, setMembers] = useState([]);
   const countdownRef = useRef(null);
 
   useEffect(() => {
+    getMembers().then(setMembers).catch(console.error);
+    let isMounted = true;
     const startPreview = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        if (!isMounted) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          await videoRef.current.play();
+          try {
+            await videoRef.current.play();
+          } catch (playErr) {
+            if (playErr.name !== "AbortError") {
+              throw playErr;
+            }
+          }
         }
       } catch (err) {
-        console.error("Camera access failed", err);
-        setInfo("Camera access failed. Please allow camera permission.");
+        if (err.name !== "AbortError") {
+          console.error("Camera access failed", err);
+          setInfo("Camera access failed. Please allow camera permission.");
+        }
       }
     };
     startPreview();
     return () => {
+      isMounted = false;
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
       }
       if (countdownRef.current) clearInterval(countdownRef.current);
     };
+  }, []);
+
+  // ── Voice command: auto-fill roll number and start capture ────────────────
+  useEffect(() => {
+    const onVoiceStart = (e) => {
+      const { rollNo = "" } = e.detail || {};
+      if (!rollNo) return;
+      setRollNumber(rollNo);
+      // Give camera 600ms to finish init, then auto-trigger capture
+      setTimeout(() => {
+        // handleStart reads rollNumber state, but state update is async.
+        // Pass rollNo directly to avoid closure staleness.
+        setRollNumber(rollNo);
+        // We can't call handleStart() directly here because it reads
+        // rollNumber from state which may not be updated yet.
+        // Instead we dispatch a synthetic click on the Start button.
+        document.getElementById("biometric-start-btn")?.click();
+      }, 600);
+    };
+    window.addEventListener("command-start-biometric", onVoiceStart);
+    return () => window.removeEventListener("command-start-biometric", onVoiceStart);
   }, []);
 
   const captureFrameAsBase64 = () => {
@@ -187,6 +225,7 @@ export default function BiometricRegistration() {
         </label>
         <input
           id="roll-number-input"
+          list="roll-numbers"
           type="text"
           placeholder="Enter roll number"
           value={rollNumber}
@@ -194,8 +233,14 @@ export default function BiometricRegistration() {
           style={styles.input}
           disabled={isBusy}
         />
+        <datalist id="roll-numbers">
+          {members.map((m) => (
+            <option key={m.roll_no} value={m.roll_no}>{m.name}</option>
+          ))}
+        </datalist>
 
         <button
+          id="biometric-start-btn"
           type="button"
           onClick={handleStart}
           disabled={isBusy || !rollNumber.trim()}

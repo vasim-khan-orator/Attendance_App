@@ -1,10 +1,12 @@
 // TeacherDashboard.jsx
 import React, { useState, useEffect, createContext, useContext } from "react";
 import { useNavigate } from "react-router-dom";
+import axios from "axios";
 import membersStorage from "./utils/membersStorage";
-import { getCurrentAttendance } from "../api/attendanceApi"; // Import the new API function
+import { getCurrentAttendance } from "../api/attendanceApi";
 import { API_BASE_URL } from "../config";
 import { getApiErrorMessage, parseFetchResponseOrThrow } from "../api/errorUtils";
+import { timerStorage } from "./utils/timerStorage";
 
 // Import all components
 import AddMember from "./components/AddMember";
@@ -17,6 +19,7 @@ import QRGenerator from "./components/QRGenerator";
 import CurrentStatus from "./components/CurrentStatus";
 import PreviousStatus from "./components/PreviousStatus";
 import WebcamScanner from "./components/WebcamScanner";
+import CommandController from "../command/CommandController";
 
 // ===== MEMBERS CONTEXT =====
 const MembersContext = createContext();
@@ -228,63 +231,95 @@ function DashboardContent() {
     }
   };
 
+  // ── Clock + attendance polling ─────────────────────────────────────────────
   useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-
+    const clockTimer = setInterval(() => setCurrentTime(new Date()), 1000);
     loadAttendance();
-    const interval = setInterval(loadAttendance, 5000);
-
-    return () => {
-      clearInterval(timer);
-      clearInterval(interval);
-    };
+    const pollInterval = setInterval(loadAttendance, 5000);
+    return () => { clearInterval(clockTimer); clearInterval(pollInterval); };
   }, []);
 
+  // ── Global command event listeners (always mounted here) ──────────────────
+  useEffect(() => {
+    // START TIMER
+    const onCmdStart = async () => {
+      timerStorage.startTimer();
+      setIsScannerActive(true);
+      try { await axios.post(`${API_BASE_URL}/attendance/session/start`); }
+      catch (err) { console.error("Session start failed", err); }
+      // Notify Timer.jsx display to re-read storage
+      window.dispatchEvent(new CustomEvent("timer-state-changed", { detail: { isRunning: true } }));
+    };
+
+    // STOP TIMER
+    const onCmdStop = async () => {
+      timerStorage.stopTimer();
+      setIsScannerActive(false);
+      setCurrentAttendance([]);
+      try { await axios.post(`${API_BASE_URL}/attendance/session/stop`); }
+      catch (err) { console.error("Session stop failed", err); }
+      window.dispatchEvent(new CustomEvent("timer-state-changed", { detail: { isRunning: false } }));
+    };
+
+    // RESET TIMER
+    const onCmdReset = () => {
+      timerStorage.resetTimer();
+      setIsScannerActive(false);
+      window.dispatchEvent(new CustomEvent("timer-state-changed", { detail: { isRunning: false } }));
+    };
+
+    // SET TIMER to custom duration
+    const onCmdSet = (e) => {
+      const { seconds } = e.detail || {};
+      if (!seconds || seconds <= 0) return;
+      const settings = timerStorage.getTimerSettings();
+      settings.duration = seconds;
+      settings.remainingTime = seconds;
+      timerStorage.saveTimerSettings(settings);
+      window.dispatchEvent(new CustomEvent("timer-state-changed", { detail: { isRunning: settings.isRunning } }));
+    };
+
+    // LOGOUT
+    const onCmdLogout = () => { navigate("/"); };
+
+    window.addEventListener("command-start-timer",  onCmdStart);
+    window.addEventListener("command-stop-timer",   onCmdStop);
+    window.addEventListener("command-reset-timer",  onCmdReset);
+    window.addEventListener("command-set-timer",    onCmdSet);
+    window.addEventListener("command-logout",       onCmdLogout);
+
+    return () => {
+      window.removeEventListener("command-start-timer",  onCmdStart);
+      window.removeEventListener("command-stop-timer",   onCmdStop);
+      window.removeEventListener("command-reset-timer",  onCmdReset);
+      window.removeEventListener("command-set-timer",    onCmdSet);
+      window.removeEventListener("command-logout",       onCmdLogout);
+    };
+  }, [navigate]);
+
   const formatDate = (date) => {
-    return date.toLocaleDateString("en-US", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric"
-    });
+    return date.toLocaleDateString("en-US", { day: "2-digit", month: "2-digit", year: "numeric" });
   };
 
   const formatTime = (date) => {
-    return date.toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false
-    });
+    return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
   };
 
-  const handleLogout = () => {
-    navigate("/");
-  };
+  const handleLogout = () => { navigate("/"); };
 
   const handleMenuClick = (mainMenu, subMenu) => {
-    if (subMenu === "Logout") {
-      handleLogout();
-      return;
-    }
+    if (subMenu === "Logout") { handleLogout(); return; }
     setActiveMainMenu(mainMenu);
     setActiveSubMenu(subMenu);
   };
 
-  const handleTimerStateChange = (isRunning) => {
-    setIsScannerActive(isRunning);
-  };
+  const handleTimerStateChange = (isRunning) => { setIsScannerActive(isRunning); };
 
-  const handleTimerStop = () => {
-    setCurrentAttendance([]);
-    setIsScannerActive(false);
-  };
+  const handleTimerStop = () => { setCurrentAttendance([]); setIsScannerActive(false); };
 
   const handleScanResult = (scanData) => {
-    // Update current attendance display without duplicate roll numbers.
     setCurrentAttendance((prev) => {
-      if (prev.some((row) => row.roll_no === scanData.roll_no)) {
-        return prev;
-      }
+      if (prev.some((row) => row.roll_no === scanData.roll_no)) return prev;
       return [...prev, scanData];
     });
   };
@@ -486,6 +521,13 @@ function DashboardContent() {
           </div>
         </div>
       </div>
+
+      {/* ── Command Controller (floating assistant) ── */}
+      <CommandController
+        navigateTo={handleMenuClick}
+        members={members}
+        currentAttendance={currentAttendance}
+      />
     </div>
   );
 }

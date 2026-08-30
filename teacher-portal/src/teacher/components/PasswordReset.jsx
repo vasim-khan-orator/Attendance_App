@@ -1,8 +1,9 @@
 // src/teacher/components/PasswordReset.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { studentAuthStorage } from "../utils/authStorage";
 import { API_BASE_URL } from "../../config";
 import { getApiErrorMessage, parseFetchResponseOrThrow } from "../../api/errorUtils";
+import { useMembers } from "../TeacherDashboard";
 
 export default function PasswordReset() {
   const [teacherOldPass, setTeacherOldPass] = useState("");
@@ -10,6 +11,7 @@ export default function PasswordReset() {
   const [studentRollNo, setStudentRollNo] = useState("");
   const [studentNewPass, setStudentNewPass] = useState("");
   const [message, setMessage] = useState({ text: "", type: "" });
+  const { members } = useMembers();
 
   const handleTeacherPasswordReset = async () => {
     if (!teacherOldPass || !teacherNewPass) {
@@ -78,6 +80,36 @@ export default function PasswordReset() {
     }
   };
 
+  // ── Voice command listeners ─────────────────────────────────────────
+  useEffect(() => {
+    // TEACHER password
+    const onFillTeacher = (e) => {
+      const { oldPass = "", newPass = "" } = e.detail || {};
+      if (oldPass) setTeacherOldPass(oldPass);
+      if (newPass) setTeacherNewPass(newPass);
+    };
+    const onSubmitTeacher = () => handleTeacherPasswordReset();
+
+    // STUDENT password
+    const onFillStudent = (e) => {
+      const { rollNo = "", newPass = "" } = e.detail || {};
+      if (rollNo) setStudentRollNo(rollNo);
+      if (newPass) setStudentNewPass(newPass);
+    };
+    const onSubmitStudent = () => handleStudentPasswordReset();
+
+    window.addEventListener("command-fill-teacher-password",   onFillTeacher);
+    window.addEventListener("command-submit-teacher-password", onSubmitTeacher);
+    window.addEventListener("command-fill-student-password",   onFillStudent);
+    window.addEventListener("command-submit-student-password", onSubmitStudent);
+    return () => {
+      window.removeEventListener("command-fill-teacher-password",   onFillTeacher);
+      window.removeEventListener("command-submit-teacher-password", onSubmitTeacher);
+      window.removeEventListener("command-fill-student-password",   onFillStudent);
+      window.removeEventListener("command-submit-student-password", onSubmitStudent);
+    };
+  }, []);
+
   return (
     <div style={styles.container}>
       <h2 style={styles.title}>Password Reset</h2>
@@ -123,12 +155,18 @@ export default function PasswordReset() {
         <div style={styles.inputGroup}>
           <label style={styles.label}>Roll Number:</label>
           <input
+            list="reset-roll-numbers"
             type="text"
             value={studentRollNo}
             onChange={(e) => setStudentRollNo(e.target.value)}
             style={styles.input}
             placeholder="Enter student roll number"
           />
+          <datalist id="reset-roll-numbers">
+            {members && members.map((m) => (
+              <option key={m.roll_no} value={m.roll_no}>{m.name}</option>
+            ))}
+          </datalist>
         </div>
         
         <div style={styles.inputGroup}>

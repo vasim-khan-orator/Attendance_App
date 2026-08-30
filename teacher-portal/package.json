@@ -1,13 +1,40 @@
 {
   "name": "teacher-portal",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:dev": "vite build && npx electron .",
+    "electron:build": "vite build && npx electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.attendance.client",
+    "productName": "AttendanceClient",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": null
+    },
+    "portable": {
+      "artifactName": "AttendanceClient.exe"
+    }
   },
   "dependencies": {
     "axios": "^1.13.2",
@@ -23,6 +50,8 @@
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^36.4.0",
+    "electron-builder": "^26.0.12",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",

@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { HashRouter as Router, Routes, Route } from "react-router-dom";
 import { MembersProvider } from "./teacher/context/MembersContext";
 import LoginSwitcher from "./pages/auth/LoginSwitcher";
 import TeacherDashboard from "./teacher/TeacherDashboard";

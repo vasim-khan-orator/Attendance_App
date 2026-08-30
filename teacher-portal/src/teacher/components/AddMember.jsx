@@ -1,22 +1,41 @@
-import React, { useState } from "react";
-import { useMembers } from "../TeacherDashboard";  // Changed
+import React, { useState, useEffect } from "react";
+import { useMembers } from "../TeacherDashboard";
 import { studentAuthStorage } from "../utils/authStorage";
 
 export default function AddMember() {
   const { addMember } = useMembers();
   const [formData, setFormData] = useState({ rollNo: "", name: "" });
-  const [message, setMessage] = useState({ text: "", type: "" }); // success/error
+  const [message, setMessage] = useState({ text: "", type: "" });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData({
-      ...formData,
-      [name]: value
-    });
-    // Clear message when user starts typing
+    setFormData({ ...formData, [name]: value });
     if (message.text) setMessage({ text: "", type: "" });
   };
+
+  // ── Voice commands: fill fields and submit ────────────────────────────────
+  useEffect(() => {
+    // FILL: populate the form fields (called before confirmation)
+    const onFill = (e) => {
+      const { name = "", rollNo = "" } = e.detail || {};
+      setFormData({ name: name.trim(), rollNo: rollNo.trim() });
+      setMessage({ text: "", type: "" });
+    };
+
+    // SUBMIT: called when user says "confirm" (after fill)
+    const onSubmit = async () => {
+      // Grab current form values via a state read — trigger programmatic submit
+      document.getElementById("add-member-form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    };
+
+    window.addEventListener("command-fill-add-member", onFill);
+    window.addEventListener("command-submit-add-member", onSubmit);
+    return () => {
+      window.removeEventListener("command-fill-add-member", onFill);
+      window.removeEventListener("command-submit-add-member", onSubmit);
+    };
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -73,7 +92,7 @@ export default function AddMember() {
     <div style={styles.container}>
       <h2 style={styles.title}>Add Member</h2>
       
-      <form onSubmit={handleSubmit} style={styles.form}>
+      <form id="add-member-form" onSubmit={handleSubmit} style={styles.form}>
         <div style={styles.inputGroup}>
           <label style={styles.label} htmlFor="rollNo">
             Roll Number *

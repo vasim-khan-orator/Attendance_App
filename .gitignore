@@ -15,6 +15,7 @@ dist-ssr
 env
 .venv/
 venv/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -25,3 +26,20 @@ venv/
 *.njsproj
 *.sln
 *.sw?
+
+# Documentation for LLMs (Ignored)
+/docs_for_llm/
+/attendance-backend/prompts/
+
+# Python & DB
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite
+*.sqlite3
+
+# Builds and releases
+build/
+release/
+*.spec
+*.zip

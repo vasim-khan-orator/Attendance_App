@@ -1,5 +1,5 @@
 // src/teacher/components/QRGenerator.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { QRCodeCanvas } from "qrcode.react";
 import { useMembers } from "../TeacherDashboard";
 import { api } from "../../api/client";
@@ -74,6 +74,37 @@ export default function QRGenerator() {
       link.click();
     }
   };
+
+  // ── Voice command listeners ────────────────────────────────────────────
+  useEffect(() => {
+    const onGenerate = (e) => {
+      const { rollNo } = e.detail || {};
+      if (!rollNo) return;
+      setSelectedRoll(rollNo);
+      // Trigger generate after state update
+      setTimeout(() => {
+        const student = members.find((m) => m.roll_no === rollNo || m.rollNo === rollNo);
+        if (student) {
+          const payload = `${student.roll_no}|${student.name}`;
+          setQrValue(payload);
+        }
+      }, 100);
+    };
+
+    const onGrantAccess = (e) => {
+      const { rollNo } = e.detail || {};
+      if (!rollNo) return;
+      setSelectedRoll(rollNo);
+      setTimeout(() => handleGrantQRPermission(), 100);
+    };
+
+    window.addEventListener("command-generate-qr",     onGenerate);
+    window.addEventListener("command-grant-qr-access", onGrantAccess);
+    return () => {
+      window.removeEventListener("command-generate-qr",     onGenerate);
+      window.removeEventListener("command-grant-qr-access", onGrantAccess);
+    };
+  }, [members]);
 
   return (
     <div style={styles.container}>

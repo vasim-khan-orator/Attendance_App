@@ -121,6 +121,20 @@ export default function WebcamScanner({ isScannerActive, onScanResult, reloadCur
     };
   }, [isScannerActive, autoScanEnabled]);
 
+  // ── Listen for scanner commands from the Command Controller ──────────────
+  useEffect(() => {
+    const onCmdStart = () => { if (isScannerActive) setAutoScanEnabled(true); };
+    const onCmdStop  = () => { setAutoScanEnabled(false); };
+
+    window.addEventListener("command-start-scanner", onCmdStart);
+    window.addEventListener("command-stop-scanner",  onCmdStop);
+
+    return () => {
+      window.removeEventListener("command-start-scanner", onCmdStart);
+      window.removeEventListener("command-stop-scanner",  onCmdStop);
+    };
+  }, [isScannerActive]);
+
   const startAutoScanner = async () => {
     try {
       let stream;
