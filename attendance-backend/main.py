@@ -13,9 +13,12 @@ from datetime import datetime, date
 import uuid  # ✅ Added import for UUID generation
 from models_download import ensure_models as ensure_face_models
 
+from voice_router import voice_router
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+app.include_router(voice_router)
 
 
 def run_compat_migrations(db: Session):

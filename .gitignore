@@ -43,3 +43,6 @@ build/
 release/
 *.spec
 *.zip
+
+# Ignore all text files (e.g. internship reports, prompt text files)
+*.txt

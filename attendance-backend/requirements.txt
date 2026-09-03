@@ -5,4 +5,6 @@ pydantic
 pillow
 numpy
 opencv-python-headless
-
+websockets
+nvidia-riva-client
+grpcio

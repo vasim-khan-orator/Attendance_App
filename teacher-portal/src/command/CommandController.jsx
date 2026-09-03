@@ -35,8 +35,7 @@ const WELCOME = {
 };
 
 // ─── Unique ID helper ─────────────────────────────────────────────────────────
-let _uid = 0;
-const uid = () => `msg-${++_uid}`;
+const uid = () => `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 // ─── Default panel position (bottom-right) ────────────────────────────────────
 const DEFAULT_POS = { x: null, y: null }; // null = use CSS default (bottom/right)
@@ -47,6 +46,7 @@ export default function CommandController({ navigateTo, members = [], currentAtt
   const [input, setInput]               = useState("");
   const [messages, setMessages]         = useState([WELCOME]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isListening, setIsListening]   = useState(false);
 
   // ── Drag state ──────────────────────────────────────────────────────────────
   const [pos, setPos]           = useState(DEFAULT_POS);
@@ -76,6 +76,8 @@ export default function CommandController({ navigateTo, members = [], currentAtt
     window.addEventListener("command-clear-chat", onClear);
     return () => window.removeEventListener("command-clear-chat", onClear);
   }, []);
+
+
 
   // ── Drag handlers ───────────────────────────────────────────────────────────
   const onHeaderMouseDown = useCallback((e) => {
@@ -187,8 +189,7 @@ export default function CommandController({ navigateTo, members = [], currentAtt
     if (parsed.intent === INTENTS.UNKNOWN) {
       pushMsg({
         type: MSG.ERROR,
-        text: "I didn't understand that command.",
-        suggestions: getExampleCommands(),
+        text: "I didn't understand that command. Type **help** to see all commands.",
       });
       setIsProcessing(false);
       return;
@@ -211,11 +212,103 @@ export default function CommandController({ navigateTo, members = [], currentAtt
     pushMsg({
       type: result.success ? MSG.ASSISTANT : MSG.ERROR,
       text: result.message || "Something went wrong.",
-      ...(result.success ? {} : { suggestions: getExampleCommands() }),
     });
 
     setIsProcessing(false);
   }, [isProcessing, navigateTo, members, currentAttendance, pushMsg]);
+
+  // Stable refs for callbacks so the WebSocket doesn't disconnect on re-render
+  const submitCommandRef = useRef(submitCommand);
+  const pushMsgRef = useRef(pushMsg);
+  
+  useEffect(() => {
+    submitCommandRef.current = submitCommand;
+    pushMsgRef.current = pushMsg;
+  }, [submitCommand, pushMsg]);
+
+  // ── Voice Streaming ───────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!isListening) return;
+
+    let ws;
+    let audioContext;
+    let mediaStream;
+    let scriptNode;
+
+    const startStreaming = async () => {
+      try {
+        const WS_URL = import.meta.env.VITE_API_URL?.replace("http", "ws") || "ws://localhost:8000";
+        ws = new WebSocket(`${WS_URL}/ws/voice`);
+
+        ws.onopen = async () => {
+          console.log("[Voice] Connected to Riva backend");
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          
+          audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: 16000,
+          });
+
+          const source = audioContext.createMediaStreamSource(mediaStream);
+          scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+          
+          scriptNode.onaudioprocess = (e) => {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            const float32Array = e.inputBuffer.getChannelData(0);
+            
+            // Convert float32 to int16 (Riva expects 16-bit PCM)
+            const int16Array = new Int16Array(float32Array.length);
+            for (let i = 0; i < float32Array.length; i++) {
+              let s = Math.max(-1, Math.min(1, float32Array[i]));
+              int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            ws.send(int16Array.buffer);
+          };
+
+          source.connect(scriptNode);
+          scriptNode.connect(audioContext.destination);
+          
+          pushMsgRef.current({ type: MSG.ASSISTANT, text: "🎤 Listening... Say a command." });
+        };
+
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          if (data.error) {
+            console.error("[Voice Error]", data.error);
+            setIsListening(false);
+            pushMsgRef.current({ type: MSG.ERROR, text: "Voice Error: " + data.error });
+            return;
+          }
+          if (data.text) {
+             if (data.is_final) {
+               setInput("");
+               submitCommandRef.current(data.text);
+             } else {
+               setInput(data.text);
+             }
+          }
+        };
+
+        ws.onclose = () => {
+          console.log("[Voice] Disconnected");
+          setIsListening(false);
+        };
+
+      } catch (err) {
+        console.error("Mic access denied or WebSocket failed:", err);
+        setIsListening(false);
+        pushMsgRef.current({ type: MSG.ERROR, text: "Could not access microphone." });
+      }
+    };
+
+    startStreaming();
+
+    return () => {
+      if (ws) ws.close();
+      if (scriptNode) scriptNode.disconnect();
+      if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+      if (audioContext) audioContext.close();
+    };
+  }, [isListening]);
 
   // ── Confirmation button handlers (UI buttons in bubble) ─────────────────
   const handleConfirm = useCallback(async (payload) => {
@@ -319,6 +412,18 @@ export default function CommandController({ navigateTo, members = [], currentAtt
 
           {/* Input bar */}
           <form onSubmit={handleSubmit} style={inputBarStyle}>
+            <button 
+              type="button"
+              onClick={() => setIsListening(!isListening)}
+              style={{
+                ...sendBtnStyle(false),
+                background: isListening ? "rgba(220,38,38,0.75)" : "rgba(30,41,59,0.75)",
+                color: isListening ? "#fff" : "rgba(148,163,184,0.9)",
+              }}
+              title={isListening ? "Stop Listening" : "Start Voice Assistant"}
+            >
+              {isListening ? "⏹" : "🎤"}
+            </button>
             <input
               ref={inputRef}
               id="cmd-controller-input"
